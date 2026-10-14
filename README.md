@@ -30,11 +30,22 @@ cmake --build build --config Release
 ```powershell
 .\SentinelGuard.exe scan C:\Users\you\Downloads
 .\SentinelGuard.exe scan C:\path\to\file.exe
+.\SentinelGuard.exe scan-json C:\Users\you\Downloads
 .\SentinelGuard.exe monitor C:\Users\you\Downloads
 .\SentinelGuard.exe --self-test
 ```
 
 `monitor` continues until Ctrl+C. It logs detections to the console/debug output and does not delete or quarantine files.
+
+`scan-json` writes one JSON document to standard output, with a `results` entry for each scanned file or
+error and aggregate `summary` counts. Non-ASCII paths are escaped as Unicode sequences, so the output
+remains valid UTF-8/ASCII for redirected files and automation. Example result:
+
+```json
+{"schema_version":1,"results":[{"path":"C:\\sample.exe","status":"scanned","sha256":"...","detected":false,"score":0,"rule":""}],"summary":{"scanned":1,"detected":0,"unreadable":0}}
+```
+
+Keep standard error separate when redirecting JSON output; database warnings are written there.
 
 To install the optional auto-starting Windows service, run an elevated terminal and select the one directory to monitor:
 
@@ -69,10 +80,13 @@ The client calculates SHA-256 locally and queries `GET /api/v3/files/{sha256}` o
 
 ```powershell
 .\SentinelGuard.exe --self-test
+powershell -ExecutionPolicy Bypass -File tests\scan-json.ps1 -ExePath out\SentinelGuard.exe
 ```
 
 The self-test verifies the built-in test signature in memory and does not write an antivirus test file to disk.
+The PowerShell smoke test checks JSON parsing, Unicode file names, detection results, and exit codes.
 
-`scan` is script-friendly: it exits with `0` when no signals or read errors occur, `1` when one or more
-signals are found and every file was scanned, and `2` if any files could not be read or the scan path
-could not be traversed. A `2` means the scan was incomplete; inspect the summary and any `[SIGNAL]` lines.
+`scan` and `scan-json` are script-friendly: they exit with `0` when no signals or read errors occur, `1`
+when one or more signals are found and every file was scanned, and `2` if any files could not be read or
+the scan path could not be traversed. A `2` means the scan was incomplete; inspect the summary and any
+`[SIGNAL]` lines, or the JSON `results` and `summary`.

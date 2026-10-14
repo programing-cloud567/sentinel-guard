@@ -10,6 +10,35 @@
 
 namespace {
 HANDLE g_console_stop_event = nullptr;
+constexpr char json_hex_digits[] = "0123456789abcdef";
+
+std::string json_quote(const std::wstring &value) {
+    std::string escaped = "\"";
+    for (const wchar_t character : value) {
+        if (character == L'"' || character == L'\\') {
+            escaped.push_back('\\');
+            escaped.push_back(static_cast<char>(character));
+        } else if (character >= 0x20 && character <= 0x7e) {
+            escaped.push_back(static_cast<char>(character));
+        } else {
+            const auto code_unit = static_cast<unsigned int>(character);
+            escaped.append("\\u");
+            escaped.push_back(json_hex_digits[(code_unit >> 12) & 0x0f]);
+            escaped.push_back(json_hex_digits[(code_unit >> 8) & 0x0f]);
+            escaped.push_back(json_hex_digits[(code_unit >> 4) & 0x0f]);
+            escaped.push_back(json_hex_digits[code_unit & 0x0f]);
+        }
+    }
+    escaped.push_back('"');
+    return escaped;
+}
+
+void json_error_result(const std::wstring &path, int error_code, bool &first_result) {
+    if (!first_result) std::cout << ',';
+    first_result = false;
+    std::cout << "{\"path\":" << json_quote(path)
+              << ",\"status\":\"error\",\"error_code\":" << error_code << '}';
+}
 
 BOOL WINAPI console_handler(DWORD signal) {
     if (signal == CTRL_C_EVENT || signal == CTRL_BREAK_EVENT ||
@@ -39,11 +68,21 @@ std::wstring default_database_path() {
     return (std::filesystem::current_path() / L"signatures.txt").wstring();
 }
 
-int scan_target(const std::wstring &target, const std::wstring &database) {
+int scan_target(const std::wstring &target, const std::wstring &database, bool json_output) {
+    bool first_result = true;
+    if (json_output) {
+        std::cout << "{\"schema_version\":1,\"results\":[";
+    }
     std::error_code error;
     const std::filesystem::path root(target);
     if (!std::filesystem::exists(root, error) || error) {
-        std::wcerr << L"Path does not exist or cannot be accessed: " << target << L'\n';
+        const int error_code = error ? error.value() : ERROR_FILE_NOT_FOUND;
+        if (json_output) {
+            json_error_result(target, error_code, first_result);
+            std::cout << "],\"summary\":{\"scanned\":0,\"detected\":0,\"unreadable\":1}}\n";
+        } else {
+            std::wcerr << L"Path does not exist or cannot be accessed: " << target << L'\n';
+        }
         return 2;
     }
     error.clear();
@@ -60,41 +99,79 @@ int scan_target(const std::wstring &target, const std::wstring &database) {
         const int status = sg_scan_file(path.c_str(), database.c_str(), &result);
         if (status != 0) {
             ++skipped;
+            if (json_output) {
+                json_error_result(path.wstring(), status, first_result);
+            }
             return;
         }
         ++scanned;
         if (result.detected) {
             ++detected;
-            std::wcout << L"[SIGNAL] score=" << result.score << L" rule=" << result.rule
-                       << L" sha256=" << result.sha256 << L" file=" << path.wstring() << L'\n';
+            if (!json_output) {
+                std::wcout << L"[SIGNAL] score=" << result.score << L" rule=" << result.rule
+                           << L" sha256=" << result.sha256 << L" file=" << path.wstring() << L'\n';
+            }
+        }
+        if (json_output) {
+            if (!first_result) std::cout << ',';
+            first_result = false;
+            std::cout << "{\"path\":" << json_quote(path.wstring())
+                      << ",\"status\":\"scanned\",\"sha256\":" << json_quote(result.sha256)
+                      << ",\"detected\":" << (result.detected ? "true" : "false")
+                      << ",\"score\":" << result.score
+                      << ",\"rule\":" << json_quote(result.rule) << '}';
         }
     };
 
-    if (std::filesystem::is_regular_file(root, error)) {
+    const bool root_is_file = std::filesystem::is_regular_file(root, error);
+    if (error) {
+        ++skipped;
+        if (json_output) {
+            json_error_result(root.wstring(), error.value(), first_result);
+        }
+    } else if (root_is_file) {
         scan_one(root);
     } else {
         std::filesystem::recursive_directory_iterator iterator(
             root, std::filesystem::directory_options::skip_permission_denied, error);
         const std::filesystem::recursive_directory_iterator end;
+        if (error) {
+            ++skipped;
+            if (json_output) {
+                json_error_result(root.wstring(), error.value(), first_result);
+            }
+        }
         while (!error && iterator != end) {
             std::error_code item_error;
             if (iterator->is_regular_file(item_error)) {
                 scan_one(iterator->path());
             } else if (item_error) {
                 ++skipped;
+                if (json_output) {
+                    json_error_result(iterator->path().wstring(), item_error.value(), first_result);
+                }
             }
             iterator.increment(error);
             if (error) {
                 ++skipped;
+                if (json_output) {
+                    json_error_result(root.wstring(), error.value(), first_result);
+                }
                 error.clear();
-                iterator.increment(error);
+                break;
             }
         }
     }
 
-    std::wcout << L"Scan complete: " << scanned << L" file(s), " << detected
-               << L" signal(s), " << skipped << L" unreadable file(s).\n"
-               << L"Signals are heuristic indicators, not a definitive verdict.\n";
+    if (json_output) {
+        std::cout << "],\"summary\":{\"scanned\":" << scanned
+                  << ",\"detected\":" << detected
+                  << ",\"unreadable\":" << skipped << "}}\n";
+    } else {
+        std::wcout << L"Scan complete: " << scanned << L" file(s), " << detected
+                   << L" signal(s), " << skipped << L" unreadable file(s).\n"
+                   << L"Signals are heuristic indicators, not a definitive verdict.\n";
+    }
     if (skipped != 0) return 2;
     if (detected != 0) return 1;
     return 0;
@@ -104,6 +181,7 @@ void print_usage() {
     std::wcout <<
         L"SentinelGuard - native Windows static scanner and folder monitor\n"
         L"  SentinelGuard.exe scan <file-or-folder> [signature-db]\n"
+        L"  SentinelGuard.exe scan-json <file-or-folder> [signature-db]\n"
         L"  SentinelGuard.exe monitor <folder> [signature-db]\n"
         L"  SentinelGuard.exe vt <file>        (uses SENTINELGUARD_VT_API_KEY)\n"
         L"  SentinelGuard.exe init-db <path>\n"
@@ -136,8 +214,8 @@ int wmain(int argc, wchar_t **argv) {
 
     const std::wstring command(argv[1]);
     const std::wstring database = default_database_path();
-    if (command == L"scan" && (argc == 3 || argc == 4)) {
-        return scan_target(argv[2], argc == 4 ? argv[3] : database);
+    if ((command == L"scan" || command == L"scan-json") && (argc == 3 || argc == 4)) {
+        return scan_target(argv[2], argc == 4 ? argv[3] : database, command == L"scan-json");
     }
     if (command == L"monitor" && (argc == 3 || argc == 4)) {
         std::error_code db_error;
