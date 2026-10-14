@@ -1,0 +1,11 @@
+out/
+build/
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.user
+*.suo
