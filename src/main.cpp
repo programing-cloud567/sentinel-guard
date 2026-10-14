@@ -95,6 +95,8 @@ int scan_target(const std::wstring &target, const std::wstring &database) {
     std::wcout << L"Scan complete: " << scanned << L" file(s), " << detected
                << L" signal(s), " << skipped << L" unreadable file(s).\n"
                << L"Signals are heuristic indicators, not a definitive verdict.\n";
+    if (skipped != 0) return 2;
+    if (detected != 0) return 1;
     return 0;
 }
 

@@ -72,3 +72,7 @@ The client calculates SHA-256 locally and queries `GET /api/v3/files/{sha256}` o
 ```
 
 The self-test verifies the built-in test signature in memory and does not write an antivirus test file to disk.
+
+`scan` is script-friendly: it exits with `0` when no signals or read errors occur, `1` when one or more
+signals are found and every file was scanned, and `2` if any files could not be read or the scan path
+could not be traversed. A `2` means the scan was incomplete; inspect the summary and any `[SIGNAL]` lines.
