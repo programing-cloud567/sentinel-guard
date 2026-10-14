@@ -80,12 +80,23 @@ int sg_install_service(const std::wstring &directory, const std::wstring &databa
         if (!error) {
             const auto shared_database = shared_directory / L"signatures.txt";
             if (!std::filesystem::exists(shared_database, error) && !error) {
-                const int create_result = sg_write_default_database(shared_database.c_str());
-                if (create_result != 0) {
-                    free(program_data);
-                    std::wcerr << L"Could not create shared signature database (error "
-                               << create_result << L").\n";
-                    return 1;
+                if (std::filesystem::exists(database_path, error) && !error) {
+                    std::filesystem::copy_file(database_path, shared_database,
+                        std::filesystem::copy_options::none, error);
+                    if (error) {
+                        free(program_data);
+                        std::wcerr << L"Could not copy the local signature database (error "
+                                   << error.value() << L").\n";
+                        return 1;
+                    }
+                } else if (!error) {
+                    const int create_result = sg_write_default_database(shared_database.c_str());
+                    if (create_result != 0) {
+                        free(program_data);
+                        std::wcerr << L"Could not create shared signature database (error "
+                                   << create_result << L").\n";
+                        return 1;
+                    }
                 }
             }
             if (!error) service_database = shared_database.wstring();
